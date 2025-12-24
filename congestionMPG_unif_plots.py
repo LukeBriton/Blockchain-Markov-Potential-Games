@@ -261,10 +261,12 @@ pstdvQ = list(map(statistics.stdev, zip(*plot_accuraciesQ)))
 
 
 fig1 = plt.figure(figsize=(6, 4))
-ax = sns.lineplot(piters, pmean, color=clrs[0])  # label= 'Mean L1-accuracy'
+# TypeError: lineplot() takes from 0 to 1 positional arguments but 2 were given
+ax = sns.lineplot(x=piters, y=pmean, color=clrs[0])  # label= 'Mean L1-accuracy'
 ax.fill_between(piters, np.subtract(pmean, pstdv), np.add(pmean, pstdv), alpha=0.3,
                 facecolor=clrs[0])  # label="1-standard deviation"
-ax = sns.lineplot(pitersQ, pmeanQ, color=clrs[1])  # label= 'Mean L1-accuracy'
+# TypeError: lineplot() takes from 0 to 1 positional arguments but 2 were given
+ax = sns.lineplot(x=pitersQ, y=pmeanQ, color=clrs[1])  # label= 'Mean L1-accuracy'
 ax.fill_between(pitersQ, np.subtract(pmeanQ, pstdvQ), np.add(pmeanQ, pstdvQ), alpha=0.3,
                 facecolor=clrs[1])  # label="1-standard deviation"
 ax.legend()

@@ -47,7 +47,8 @@ def projection_simplex_bisection(v, z=1, tau=0.0001, max_iter=1000):
     upper = np.max(v)
     current = np.inf
 
-    for it in xrange(max_iter):
+    # NameError: name 'xrange' is not defined. Did you mean: 'range'?
+    for it in range(max_iter):
         if np.abs(current) / z < tau and current < 0:
             break
 

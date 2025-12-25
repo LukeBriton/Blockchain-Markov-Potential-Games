@@ -247,6 +247,7 @@ def full_experiment(runs, iters, eta, T, samples, flagQ, bc_mode, bonus_coef=0.0
             run_metrics.append({**contract.metrics(),
                                 "final_balances_mean": float(np.mean(contract.balances)),
                                 "final_balances_std": float(np.std(contract.balances))})
+            print("check:", run_metrics[k]["welfare_per_step"] * run_metrics[k]["steps"] / N, run_metrics[k]["final_balances_mean"])
         else:
             run_metrics.append({"steps": 0, "anomaly_rate": 0.0, "welfare_per_step": 0.0,
                                 "final_balances_mean": 0.0, "final_balances_std": 0.0})

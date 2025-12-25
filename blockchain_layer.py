@@ -84,7 +84,10 @@ class IncentiveContract:
 
 
 
-    def rewardDistribution(self, s: int, actions, base_rewards):
+    def rewardDistribution(self, s: int, actions, base_rewards,
+                           record=True,            # count steps + metrics?
+                           update_balances=True,   # update token balances?
+                           do_log=True):           # append ledger record?
         """
         Settlement step: returns either base rewards (LOG_ONLY) or adjusted (FULL),
         and logs. This mirrors the paper's 'rewardDistribution() aggregates data
@@ -116,16 +119,18 @@ class IncentiveContract:
             adjusted += bonus / self.N                  # equal share to each agent
 
         # 4) update on-chain balances (accounting, token settlement)
-        self.balances += adjusted
+        if update_balances:
+            self.balances += adjusted
 
-        # 5) Metrics (for ablation comparison: welfare + anomaly rate) :contentReference[oaicite:5]{index=5}
-        self.steps += 1
-        if anomalous:
-            self.anomaly_steps += 1
-        self.welfare_sum += float(np.sum(adjusted))
+        # 5) Metrics (for ablation comparison: welfare + anomaly rate)
+        if record:
+            self.steps += 1
+            if anomalous:
+                self.anomaly_steps += 1
+            self.welfare_sum += float(np.sum(adjusted))
 
         # 6) Logging (auditability, for LOG_ONLY / FULL)
-        if self.mode in (BCMode.LOG_ONLY, BCMode.FULL):
+        if do_log and self.mode in (BCMode.LOG_ONLY, BCMode.FULL):
             self.log_step(s, actions, adjusted.tolist(),
                           note=f"anomalous={anomalous}, flagged={flagged}, density={density}")
 

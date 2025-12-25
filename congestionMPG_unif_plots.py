@@ -1,5 +1,5 @@
 from congestion_games import *
-from blockchain_mech import IncentiveContract
+from blockchain_layer import IncentiveContract, BCMode
 import matplotlib.pyplot as plt
 import itertools
 import numpy as np
@@ -45,13 +45,33 @@ for act in safe_state.actions:
 	act_dic[counter] = act 
 	counter += 1
 
-contract = IncentiveContract(
-    N=N,
-    act_dic=act_dic,
-    state_dic=state_dic,
-    penalty_coef=10.0,   # tune
-    bonus_coef=0.0       # tune
-)
+# choose mode: BCMode.NONE, BCMode.LOG_ONLY, BCMode.FULL
+# (we'll pass it per run, so not fixed here)
+def make_contract(mode, bonus_coef=0.0, initial_balance=0.0):
+    return IncentiveContract(
+        N=N,
+        act_dic=act_dic,
+        state_dic=state_dic,
+        mode=mode,
+        penalty_coef=10.0,              # tune
+        bonus_coef=bonus_coef,          # tune
+        initial_balance=initial_balance,# tune
+        keep_ledger=False               # set True if you actually want records stored
+    )
+
+def settled_rewards(contract, state, actions):
+    """
+    Cache only *base* rewards; settlement may depend on policy/threshold config,
+    so compute settlement each time.
+    """
+    q = tuple(actions + [state])
+    base = selected_profiles.setdefault(
+        q,
+        get_reward(state_dic[state], [act_dic[i] for i in actions])
+    )
+    if contract is None or contract.mode == BCMode.NONE:
+        return base
+    return contract.rewardDistribution(state, actions, base)
 
 def get_next_state(state, actions):
     acts_from_ints = [act_dic[i] for i in actions]
@@ -81,30 +101,26 @@ def visit_dist(state, policy, gamma, T,samples):
     dist = [np.dot(v/samples,gamma**np.arange(T)) for (k,v) in visit_states.items()]
     return dist 
 
-def value_function(policy, gamma, T,samples):
+def value_function(policy, gamma, T, samples, contract):
     value_fun = {(s,i):0 for s in range(S) for i in range(N)}
     for k in range(samples):
         for state in range(S):
             curr_state = state
             for t in range(T):
                 actions = [pick_action(policy[curr_state, i]) for i in range(N)]
-                q = tuple(actions+[curr_state])
-                base_rewards = selected_profiles.setdefault(q, get_reward(state_dic[curr_state], [act_dic[i] for i in actions]))
-                rewards = contract.rewardDistribution(curr_state, actions, base_rewards)                 
+                rewards = settled_rewards(contract, curr_state, actions)
                 for i in range(N):
                     value_fun[state,i] += (gamma**t)*rewards[i]
                 curr_state = get_next_state(curr_state, actions)
     value_fun.update((x,v/samples) for (x,v) in value_fun.items())
     return value_fun
 
-def Q_function(agent, state, action, policy, gamma, value_fun, samples):
+def Q_function(agent, state, action, policy, gamma, value_fun, samples, contract):
     tot_reward = 0
     for i in range(samples):
         actions = [pick_action(policy[state, i]) for i in range(N)]
         actions[agent] = action
-        q = tuple(actions+[state])
-        base_rewards = selected_profiles.setdefault(q, get_reward(state_dic[state], [act_dic[i] for i in actions]))
-        rewards = contract.rewardDistribution(state, actions, base_rewards)
+        rewards = settled_rewards(contract, state, actions)  # <-- changed
         tot_reward += rewards[agent] + gamma*value_fun[get_next_state(state, actions), agent]
     return (tot_reward / samples)
 
@@ -116,7 +132,7 @@ def policy_accuracy(policy_pi, policy_star):
 	  # total_dif[agent] += np.sqrt(np.sum((policy_pi[state, agent] - policy_star[state, agent])**2))
     return np.sum(total_dif) / N
 
-def policy_gradient(mu, max_iters, gamma, eta, T, samples):
+def policy_gradient(mu, max_iters, gamma, eta, T, samples, contract):
 
     policy = {(s,i): [1/M]*M for s in range(S) for i in range(N)}
     policy_hist = [copy.deepcopy(policy)]
@@ -133,20 +149,22 @@ def policy_gradient(mu, max_iters, gamma, eta, T, samples):
             b_dist[st] = np.dot(a_dist, mu)
             
         grads = np.zeros((N, S, M))
-        value_fun = value_function(policy, gamma, T, samples)
+        value_fun = value_function(policy, gamma, T, samples, contract)
 
         value_fun_avg += sum(value_fun.values()) / float(len(value_fun)) / float(max_iters)
 
         for agent in range(N):
             for st in range(S):
                 for act in range(M):
-                    grads[agent, st, act] = b_dist[st] * Q_function(agent, st, act, policy, gamma, value_fun, samples)
+                    grads[agent, st, act] = b_dist[st] * Q_function(agent, st, act, policy, gamma, value_fun, samples, contract)
                     # grads[agent, st, act] = Q_function(agent, st, act, policy, gamma, value_fun, samples)
 
         for agent in range(N):
             for st in range(S):
                 policy[st, agent] = projection_simplex_sort(np.add(policy[st, agent], eta * grads[agent,st]), z=1)
-                contract.log_policy_hash(agent, st, policy[st, agent])
+                # optional: on-chain policy hash
+                if contract is not None:
+                    contract.log_policy_hash(agent, st, policy[st, agent])
         policy_hist.append(copy.deepcopy(policy))
 
         if policy_accuracy(policy_hist[t], policy_hist[t-1]) < 10e-16:
@@ -158,7 +176,7 @@ def policy_gradient(mu, max_iters, gamma, eta, T, samples):
     return policy_hist
 
 
-def policy_gradientQ(mu, max_iters, gamma, eta, T, samples):
+def policy_gradientQ(mu, max_iters, gamma, eta, T, samples, contract):
     policy = {(s, i): [1 / M] * M for s in range(S) for i in range(N)}
     policy_hist = [copy.deepcopy(policy)]
 
@@ -174,21 +192,21 @@ def policy_gradientQ(mu, max_iters, gamma, eta, T, samples):
         #     b_dist[st] = np.dot(a_dist, mu)
 
         grads = np.zeros((N, S, M))
-        value_fun = value_function(policy, gamma, T, samples)
+        value_fun = value_function(policy, gamma, T, samples, contract)
 
         value_fun_avg += sum(value_fun.values()) / float(len(value_fun)) / float(max_iters)
 
         for agent in range(N):
             for st in range(S):
                 for act in range(M):
-                    grads[agent, st, act] = Q_function(agent, st, act, policy, gamma, value_fun, samples)
+                    grads[agent, st, act] = Q_function(agent, st, act, policy, gamma, value_fun, samples, contract)
 
         for agent in range(N):
             for st in range(S):
                 policy[st, agent] = projection_simplex_sort(np.add(policy[st, agent], eta * grads[agent, st]), z=1)
-                contract.log_policy_hash(agent, st, policy[st, agent])
+                if contract is not None:
+                    contract.log_policy_hash(agent, st, policy[st, agent])
         policy_hist.append(copy.deepcopy(policy))
-
         if policy_accuracy(policy_hist[t], policy_hist[t - 1]) < 10e-16:
             # if policy_accuracy(policy_hist[t+1], policy_hist[t]) < 10e-16: (it makes a difference, not when t=0 but from t=1 onwards.)
             print(value_fun_avg)
@@ -205,19 +223,33 @@ def get_accuracies(policy_hist):
         accuracies.append(this_acc)
     return accuracies
 
-def full_experiment(runs,iters,eta,T,samples,flagQ):
-
+def full_experiment(runs, iters, eta, T, samples, flagQ, bc_mode, bonus_coef=0.0):
     # print('S, M: ', S, M)
     densities = np.zeros((S,M))
 
     raw_accuracies = []
+    run_metrics = []
+
     for k in range(runs):
+        contract = None
+        if bc_mode != BCMode.NONE:
+            contract = make_contract(bc_mode, bonus_coef=bonus_coef, initial_balance=0.0)
+            contract.reset_metrics()
+
         if flagQ == 0:
-            policy_hist = policy_gradient([0.5, 0.5],iters,0.99,eta,T,samples)
-        if flagQ == 1:
-            policy_hist = policy_gradientQ([0.5, 0.5], iters, 0.99, eta, T, samples)
+            policy_hist = policy_gradient([0.5, 0.5], iters, 0.99, eta, T, samples, contract)
+        else:
+            policy_hist = policy_gradientQ([0.5, 0.5], iters, 0.99, eta, T, samples, contract)
 
         raw_accuracies.append(get_accuracies(policy_hist))
+
+        if contract is not None:
+            run_metrics.append({**contract.metrics(),
+                                "final_balances_mean": float(np.mean(contract.balances)),
+                                "final_balances_std": float(np.std(contract.balances))})
+        else:
+            run_metrics.append({"steps": 0, "anomaly_rate": 0.0, "welfare_per_step": 0.0,
+                                "final_balances_mean": 0.0, "final_balances_std": 0.0})
 
         converged_policy = policy_hist[-1]
         for i in range(N):
@@ -226,25 +258,36 @@ def full_experiment(runs,iters,eta,T,samples,flagQ):
 
     densities = densities / runs
 
-    return densities, raw_accuracies
+    return densities, raw_accuracies, run_metrics
 
 
 # main program
+
+# FULL blockchain mechanism (logging + penalties + balances), with load-balance bonus
+bc_mode = BCMode.FULL
+bonus_coef = 1.0  # tune: start small
+
 # policy_gradient
 myp_start = process_time()
-flagQ = 0
-[densities, raw_accuracies] = full_experiment(3,1000,0.0001,20,10,flagQ)
+densities, raw_accuracies, metrics = full_experiment(
+    runs=3, iters=1000, eta=0.0001, T=20, samples=10, flagQ=0,
+    bc_mode=bc_mode, bonus_coef=bonus_coef
+)
+print("PG metrics:", metrics)
 myp_end = process_time()
 elapsed_time = myp_end - myp_start
-print(elapsed_time)
+print("elapsed_time:", elapsed_time)
 
 # policy_gradientQ
 myp_start = process_time()
-flagQ = 1
-[densitiesQ, raw_accuraciesQ] = full_experiment(3,1000,0.005,20,10,flagQ)
+densitiesQ, raw_accuraciesQ, metricsQ = full_experiment(
+    runs=3, iters=1000, eta=0.005, T=20, samples=10, flagQ=1,
+    bc_mode=bc_mode, bonus_coef=bonus_coef
+)
+print("Q metrics:", metricsQ)
 myp_end = process_time()
 elapsed_time = myp_end - myp_start
-print(elapsed_time)
+print("elapsed_time:", elapsed_time)
 
 
 # plots
